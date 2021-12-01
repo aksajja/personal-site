@@ -2,13 +2,13 @@ import dayjs from 'dayjs';
 
 /* Keys match keys returned by the github api. Fields without keys are
  * mostly jokes. To see everything returned by the github api, run:
- curl https://github.com/aksajja/aksajja.github.io
+ curl https://github.com/aksajja/personal-site
  */
 const data = [
   {
     label: 'Last updated at',
     key: 'pushed_at',
-    link: 'https://api.github.com/repos/aksajja/aksajja.github.io/commits',
+    link: 'https://api.github.com/repos/aksajja/personal-site/commits',
     format: (x) => dayjs(x).format('MMMM DD, YYYY'),
   },
   {
@@ -17,7 +17,7 @@ const data = [
     xargs -I file cat file | wc -l */
     label: 'Lines of Javascript powering this website',
     value: '2115',
-    link: 'https://github.com/aksajja/aksajja.github.io/graphs/contributors',
+    link: 'https://github.com/aksajja/personal-site/graphs/contributors',
   },
 ];
 
