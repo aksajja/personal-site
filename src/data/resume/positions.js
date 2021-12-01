@@ -15,8 +15,8 @@ const positions = [
     link: 'https://www.adonmo.com/',
     daterange: 'March 2017 - December 2019',
     points: [
-      'OpenALPR: Detecting commercial/private vehicle based on license plate and detecting car registration region for targeted out-of-home advertising.\‘Unique selling point\’ in raising a pre-series fund of USD 100K.',
-      'Car recognition: Proof-of-concept using GCP’s image recognition and wikidata knowledge base to classify car models. \‘Unique selling point\’ in the USD 3 Million funding round led by Alibaba-backed BAce Capital.',
+      'OpenALPR: Detecting commercial/private vehicle based on license plate and detecting car registration region for targeted out-of-home advertising.‘Unique selling point’ in raising a pre-series fund of USD 100K.',
+      'Car recognition: Proof-of-concept using GCP’s image recognition and wikidata knowledge base to classify car models. ‘Unique selling point’ in the USD 3 Million funding round led by Alibaba-backed BAce Capital.',
       'Full stack development:',
       'Web Development: Web portals and REST APIs to support Sales team, Operations team, Customers and the Crew (master portal).',
       'Single sign on: Unified account across all company domains. Single account for 4 active domains and future domains gives a time saving of >75%.',
@@ -42,7 +42,7 @@ const positions = [
     daterange: 'July 2015 - December 2015',
     points: [
       'Built an app for disbursement of information to new hires.',
-      'An activity tracker was embedded into the app to predict no-shows on the day of joining.'
+      'An activity tracker was embedded into the app to predict no-shows on the day of joining.',
     ],
   },
 ];
