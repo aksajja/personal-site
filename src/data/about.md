@@ -5,7 +5,7 @@ I'm knowledge hungry and at any point in time I have a variety of interests. At 
 
 # Currently
 
-At Arizona State University, I have co-authored my first publication. It was a very interesting time as I was a part of 'Deep learning theory' and 'Randomized numerical linear algebra' reading groups. As a part of these reading groups we referenced the [lecture notes](https://mjt.cs.illinois.edu/dlt/) by Matus Telgarsky and the [lecture notes](https://arxiv.org/abs/2002.01387) by Per-Gunnar Martinsson & Joel Tropp respectively. This has spurred a renewed interest in math. The work towards a thesis defense in 'Regression analysis' is underway.
+At Arizona State University, I have co-authored my first publication. I am fortunate to be advised by Dr. Gautam Dasarathy for my Masters thesis. It was a very interesting time as I was a part of 'Deep learning theory' and 'Randomized numerical linear algebra' reading groups. As a part of these reading groups we referenced the [lecture notes](https://mjt.cs.illinois.edu/dlt/) by Matus Telgarsky and the [survey](https://arxiv.org/abs/2002.01387) by Per-Gunnar Martinsson & Joel Tropp respectively. This has spurred a renewed interest in math. My work towards a thesis defense on 'Performance Guarantees for VAR Models with Laplacian Smoothing' is underway.
 
 # I like
 

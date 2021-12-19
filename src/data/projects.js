@@ -62,6 +62,17 @@ const data = [
   </>,
   },
   {
+    title: 'Split and Match: Example-based Adaptive Patch Sampling for Unsupervised Style Transfer (Implementation)',
+    subtitle: 'Computer vision',
+    link: 'https://openaccess.thecvf.com/content_cvpr_2016/papers/Frigo_Split_and_Match_CVPR_2016_paper.pdf',
+    image: '',
+    date: '2019-11-20',
+    desc:
+  <>
+    Implementation can be found at <a href="https://github.com/aksajja/CVAssmts/tree/master/FinalProject"> Git</a>.
+  </>,
+  },
+  {
     title: 'A unified framework for structured graph learning via spectral constraints (paper presentation)',
     subtitle: 'MAT 598 - Algebraic graph theory',
     link: 'https://jmlr.org/papers/v21/19-276.html',
