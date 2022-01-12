@@ -6,6 +6,11 @@ import data from '../../data/contact';
 
 const ContactIcons = () => (
   <ul className="icons">
+    <li key="GoogleScholar">
+      <a href="https://scholar.google.com/citations?hl=en&user=TCezQdcAAAAJ">
+        <span className="fab fa-scholar fa-lg" />
+      </a>
+    </li>
     {data.map((s) => (
       <li key={s.label}>
         <a href={s.link}>
