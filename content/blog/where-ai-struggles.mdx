@@ -1,0 +1,150 @@
+---
+title: "Where AI Coding Struggles"
+date: "2026-02-17"
+excerpt: "E2E test fragility, silent RLS failures, auth edge cases, and cumulative code debt — the failure modes that AI coding agents don't warn you about."
+coverImage: "/images/personal/where-ai-struggles-cover.jpeg"
+tags: ["AI", "Debugging", "Software Engineering", "Series"]
+---
+
+*Part 3 of 6 in the [AI Coding Agents series](/blog/building-with-ai-agents).*
+
+## The other side
+
+The [previous post](/blog/where-ai-shines) covered the wins. This one covers the costs.
+
+Of 73 Claude Code sessions building Doctor Dashboard, roughly **25 were debugging sessions** — long, exploratory, and expensive in time. Some sessions hit 700+ messages. The pattern was consistent: the AI generated code that *appeared* correct, passed simple checks, and then failed in production-like conditions.
+
+These weren't random failures. They clustered into four specific failure modes, each with a structural explanation for why AI coding agents struggle with them.
+
+## 1. E2E test fragility: the modal that wouldn't close
+
+The most persistent debugging saga started on January 28th and consumed **six sessions in a single day** — over 200 combined messages across sessions `adadaab1`, `41bc4de8`, `40925a82`, `c5d17442`, `b8a9f990`, and several more.
+
+The symptom was deceptively simple: an appointment creation dialog stayed open after submission. The Playwright test expected it to close. It didn't.
+
+### The AI's approach (wrong)
+
+The AI treated this as a test reliability issue and proposed a series of increasingly fragile workarounds:
+
+**Attempt 1:** Add `force: true` to bypass Playwright's stability checks. *Result: the click worked but the modal still didn't close.*
+
+**Attempt 2:** Increase the timeout from 5s to 30s. *Result: the test waited longer before failing.*
+
+**Attempt 3:** Add a retry loop around the assertion. *Result: the test retried the same failing assertion 5 times.*
+
+**Attempt 4:** Replace `toBeHidden()` with a custom wait that polls for the dialog to disappear. *Result: same failure, more complex test code.*
+
+Each "fix" addressed the symptom while the AI confidently assured me the approach should work. What I noticed was a pattern: the AI never asked *why* the modal was staying open. It assumed the modal should close and the test was flaky, rather than investigating whether the underlying appointment creation was actually succeeding.
+
+### The actual root cause
+
+The appointment creation was *failing silently*. Two test files ran in parallel (`fullyParallel: true` in `playwright.config.ts`), and both were creating appointments for the same test patient at overlapping time slots. When Test File A created an appointment at 09:00, and Test File B tried to create another appointment at 09:00 for the same provider, the backend returned a scheduling conflict error. The modal stayed open because the error path — the "what happens when creation fails?" code — was never implemented.
+
+The debugging plan that finally diagnosed this (`deep-cuddling-tome.md`, 306 lines) identified four compounding layers:
+
+1. **Parallel execution with shared data** — Both `appointments.spec.ts` and `appointment-reschedule.spec.ts` used `patient1`
+2. **No per-test cleanup** — Cleanup only ran in `global-teardown.ts` after ALL tests finished. Appointments accumulated: 21+ created across test files with zero cleanup during execution
+3. **Time slot collisions** — `appointments.spec.ts` used 11:00, 14:00, 17:00, 09:00; `appointment-reschedule.spec.ts` used 09:00-16:00 on next-month dates. When dates aligned, conflicts erupted
+4. **Silent error handling** — The modal component had no `onError` callback. The `catch` block in the submission handler logged to console but never closed the modal or showed a user-facing message
+
+**The AI's blind spot:** It optimized for making the *failing line* pass rather than asking *why the line was failing*. This is the fundamental limitation — the AI treats each error message as a local problem. "Modal is visible when expected hidden" → fix the assertion. A human engineer would ask: "Wait, *should* the modal be hidden? Did the operation succeed?" That question — questioning the premise — is exactly what AI agents don't do.
+
+### The session cost
+
+The six January 28th sessions consumed more messages than the entire medications feature (CRUD, API, UI, tests) took to build from scratch. The feature that triggered these bugs — appointment conflict detection — was a one-session build. The debugging was a six-session marathon.
+
+## 2. Silent RLS failures: the trigger-cleanup cycle
+
+Supabase Row Level Security policies silently drop operations that fail authorization. No error, no exception, no log entry. The query executes, returns zero rows, and the application proceeds as if the data simply doesn't exist. The AI consistently failed to reason about this behavior.
+
+The specific bug emerged on February 3rd (sessions `1293b24b` and `ab822d84`). The scenario:
+
+1. A PostgreSQL trigger (`handle_new_user`) auto-created patient records when users signed up, setting `primary_owner_id` to the new user's ID
+2. Test cleanup deleted these patient records after each test run
+3. On the *next* test run, the users still existed (they were never cleaned up), but their patient records were gone
+4. The test setup script (`patients.setup.ts`) tried to create new patient records via the API and link them to the existing users
+5. The API returned 500 errors — because the cleanup/creation lifecycle violated implicit assumptions in the RLS policies
+
+The AI identified the surface problem immediately:
+
+> **"Users are NOT being cleaned up."** The cleanup script only deletes users tracked in `self.created_users` — but that array was empty because users were created by TypeScript (`global-setup.ts`), not by the Python `DatabaseTestManager`.
+
+The fix *looked* simple: switch from tracking-based cleanup (which relied on an array that was always empty because a different process created the users) to domain-based cleanup that queries users by their test email domain. But the implementation consumed **46 assistant messages across two sessions**. Each attempted fix exposed a different RLS-related failure:
+
+- The AI wrote a Supabase query to find users by email — but the RLS policy on the `patients` table only allowed users to see their own records, so the query returned zero rows even though patients existed
+- The AI switched to the admin client — but used the wrong service key (stale after a `db reset`)
+- The AI tried to insert patient records directly — but the RLS `INSERT` policy required `auth.uid() = created_by`, and the test wasn't authenticated as the right user
+
+**The AI's blind spot:** RLS operates at the database level, completely invisible to application code. The AI couldn't "see" the policies from the code it was editing. It generated syntactically correct queries that silently returned empty results. It needed to be explicitly shown each relevant RLS policy before it could reason about why a query was failing. And even then, it couldn't reliably predict how policies on *different tables* would interact — the `patients` table policy affected what the `medications` query could see, because the `medications` policy contained a subquery against `patients`.
+
+## 3. Auth edge cases: the 10-session OAuth saga
+
+Google OAuth integration consumed more sessions than any other single feature — **10+ sessions** between January 28 and February 6, spanning the entire `feat/google-oauth` branch.
+
+The story starts clean. Session `c58d8ab6` (January 28th) produced a complete analysis of the existing OAuth flow in 6 assistant messages. It identified three gaps: no profile creation for OAuth users, no role assignment mechanism, and no duplicate account handling. I said "Let's address all of them. Create a plan." The plan was solid.
+
+Then the implementation sessions began, and each one surfaced an edge case the AI hadn't anticipated:
+
+### Edge case 1: The phantom phone number
+
+The `profiles` table had a `phone` column. Google OAuth doesn't provide phone numbers. The AI generated user creation with all fields, including `phone: None`. On local Supabase, this worked — the admin API bypasses NOT NULL constraints. On production Supabase, it threw a constraint violation. Tests passed. First production sign-up: 500 error.
+
+The fix was one line: `ALTER COLUMN phone DROP NOT NULL`. The debugging was a full session.
+
+### Edge case 2: Stale service keys
+
+Local Supabase regenerates the service role key on every `supabase db reset`. The test setup used a hardcoded key from `.env.backend-test`. After a reset, the key was stale, and every authenticated API call failed with `401 Unauthorized` — but only in the test environment, only after a database reset, and only for operations that required the service key (not the anon key).
+
+The AI spent an entire session debugging authentication failures before I realized the key had changed. The fix: read the key from `supabase status` output instead of hardcoding it. The AI never suggested checking whether the credentials themselves had changed — it assumed the code was wrong, not the configuration.
+
+### Edge case 3: Cookie domain scope
+
+The AI set the session cookie domain to `localhost` for local development. This worked perfectly — until I deployed to the staging environment at `doctor-dashboard.vercel.app`. The cookie wasn't sent because the domain didn't match. So the AI changed it to the staging domain, which broke local development. Then it tried environment-based switching, which worked for both but broke the E2E tests because Playwright runs on `localhost` but the cookie was scoped to the `NEXT_PUBLIC_DOMAIN` env var.
+
+Three sessions, three fixes, all because cookie scoping is environment-dependent and the AI generated code for one environment at a time.
+
+**The AI's blind spot:** Auth has a massive surface area of implicit state — cookies, token expiry, key rotation, environment-specific config, database constraints that differ between admin and user contexts, browser security policies. The AI generated code for the happy path and had no mental model for the integration boundaries where things actually break. It couldn't test across environments, it couldn't inspect browser cookie jars, and it couldn't correlate a `401` error with a stale service key that changed two days ago.
+
+## 4. Cumulative code debt
+
+This failure mode is the most insidious because it doesn't show up in any single session. The AI generates five features quickly, each internally consistent, but with slight architectural inconsistencies between them:
+
+- One component manages state with `useState`, another uses a custom hook, a third reads from a context provider — all for the same type of data (patient information)
+- One API handler returns `{ data, error }`, another throws exceptions, a third returns HTTP status codes with empty bodies
+- CSS approaches drift between inline styles, Tailwind classes, and CSS modules across different sessions
+- Error handling varies from `try/catch` with toast notifications to silent `console.error` to completely missing error paths
+
+Session `c5d17442` on January 28th captured a specific symptom. I asked: *"Why does the button keep re-rendering?"* The answer was that appointment state was being lifted to three different levels of the component tree across three different features built in three different sessions. Changes to any of them triggered cascading re-renders through the entire page.
+
+The AI's fix was `React.memo()` — wrapping the re-rendering component in a memoization boundary. This treated the symptom without addressing the root cause: three incompatible state management patterns that accumulated because each session started with zero awareness of architectural decisions made in previous sessions.
+
+Session `40925a82` made this concrete. At 9 user messages and 35 assistant messages, the AI tried multiple approaches to stop the re-rendering: `React.memo`, `useMemo` on the prop calculations, `useCallback` on event handlers. Each reduced the render count without eliminating it. The real fix — consolidating appointment state into a single source of truth at the right component level — would have required understanding the architectural context from previous sessions that built the three competing state patterns.
+
+**The AI's blind spot:** It doesn't carry context between sessions. Each session starts fresh, so the AI doesn't know that the pattern it's about to use contradicts the pattern used last week. It optimizes locally — this file, this feature, this session — not globally across the codebase. The result is a codebase that works but is progressively harder to refactor, because the AI can't see the inconsistencies it's creating.
+
+## The cost pattern
+
+The numbers tell the story clearly:
+
+| Category | Sessions | Avg messages | Total messages |
+|----------|----------|-------------|----------------|
+| Feature building | ~20 | ~50 | ~1,000 |
+| Debugging | ~25 | ~200 | ~5,000 |
+
+The 25 debugging sessions consumed roughly **5x the total AI interaction** of the 20 feature sessions. The features that felt fast to build had hidden costs that surfaced later as multi-day debugging marathons.
+
+The January 28th appointment debugging alone — 200+ messages across six sessions — cost more in AI interaction than the entire medications feature (table + API + UI + tests + deployment) from start to finish.
+
+## The meta-pattern
+
+**AI shifts work from implementation to debugging.** You ship faster, but you debug longer. The net productivity depends entirely on how much debugging your engineering discipline can prevent.
+
+This is counterintuitive. Most people expect AI to *reduce* debugging by generating more correct code. It does generate correct code — for the specific task in the specific session. The bugs emerge at the *boundaries*: between sessions (architectural inconsistency), between layers (RLS policy interactions), between environments (cookie domain scoping), and between test execution models (parallel tests with shared data).
+
+These boundary bugs are exactly the kind that require systemic understanding — context that spans multiple sessions, multiple files, multiple infrastructure layers. They're the bugs that AI agents are worst at because they can't hold the whole system in their head.
+
+The defense against this is engineering discipline: plans before code, tests before features, and a forcing function that requires the *entire system* to stay healthy. That's the subject of the [next post](/blog/test-driven-ai).
+
+---
+
+*Previous: [Where AI Coding Shines](/blog/where-ai-shines) | Next: [Test-Driven Discipline with AI Agents](/blog/test-driven-ai)*

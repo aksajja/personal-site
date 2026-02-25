@@ -1,0 +1,110 @@
+---
+title: "Where AI Coding Shines — The 10x Tasks"
+date: "2026-02-15"
+excerpt: "Boilerplate CRUD, schema generation, mobile scaffolding, and a 29x performance improvement — the tasks where AI coding agents genuinely delivered outsized productivity."
+coverImage: "/images/personal/hagia-sophia-dome.jpg"
+tags: ["AI", "Productivity", "Software Engineering", "Series"]
+---
+
+*Part 2 of 6 in the [AI Coding Agents series](/blog/building-with-ai-agents).*
+
+## The pattern
+
+Not all coding tasks are equal. Some are well-defined, pattern-heavy, and have clear success criteria. These are where AI coding agents shine — not because they're creative, but because they're *fast at replicating established patterns*.
+
+Of the ~20 feature-building sessions I had with Claude Code on Doctor Dashboard, the most productive ones shared a common shape: I'd written a plan, the plan specified what to build, and the AI's job was execution. The result wasn't magic — it was very fast, very accurate typing.
+
+Here are the four clearest wins.
+
+## 1. CRUD and feature scaffolding
+
+The medications feature is the best example because it touches every layer of the stack and the AI handled all of them in a single session.
+
+I started with a plan (`witty-strolling-pearl.md`) that specified:
+- Database table schema: columns, types, indexes, RLS policies, and the exact `CHECK` constraint for medication status values
+- API endpoints: `GET /patients/{id}/medications`, `POST`, `PATCH`, `DELETE` with Pydantic request/response models
+- Frontend: a React hook wrapping the API calls, a tab-based UI component with add/edit/delete flows
+
+The plan ran to ~500 lines. The AI generated the full implementation in one session — a Supabase migration with the `medications` table and four RLS policies, FastAPI handlers with proper authentication middleware, a `useMedications` React hook, and a `MedicationsTab` component with inline editing. It even generated the `resource_type_enum` addition for the audit log.
+
+The implementation wasn't novel. It followed the same pattern as every other CRUD feature in the app: table → RLS → API handler → hook → component. The AI recognized this pattern from the existing codebase and replicated it with near-zero errors.
+
+**Why it worked:** The task was *specification execution*, not design. Every decision had already been made in the plan. The AI was doing sophisticated copy-paste across a well-defined template — and it's exceptionally good at that. The medications feature was functionally identical in structure to the appointments feature, the notes feature, and the documents feature. Once one existed, the others were mechanical.
+
+**The session stats:** 6 user messages, 36 assistant messages, completed in one sitting. Compare that to the debugging sessions that regularly hit 100+ messages on ambiguous problems.
+
+## 2. Schema design and migration generation
+
+When I needed a unified treatment plan architecture that could handle IVF protocols, chronic disease management, and general prescriptions, the design discussion was the most productive type of AI interaction — analysis rather than implementation.
+
+The conversation started with a real clinical requirement: *"An ER doctor needs a unified view of ALL medications a patient is on, across all treatment plans and medical domains."* From there, the AI helped me:
+
+- **Research cross-domain schema patterns** — the resulting plan (`floofy-marinating-feigenbaum.md`) ran to 18,000 words and analyzed five different schema approaches
+- **Quantify the trade-offs** between normalized `plan_medications` tables and JSONB columns, including maintenance burden, query complexity, and domain encapsulation
+- **Identify a critical insight** that changed the decision entirely
+
+That insight was the Allergy Problem. Our `allergies` table stores allergens as free text — "Penicillin", "sulfa drugs", "shellfish." A SQL JOIN between a medication named "Amoxicillin" and an allergen named "Penicillin" returns nothing — even though Amoxicillin is a penicillin-class antibiotic. The allergy safety check *requires* semantic understanding (drug classes, brand-to-generic mappings, cross-reactivity) regardless of how we store medications. Normalization gives **illusory safety** — the schema looks rigorous but doesn't catch the interactions that actually matter. So medications stayed in JSONB, and the AI layer handles cross-referencing.
+
+The AI then generated the complete SQL migration: `protocol_templates` table for reusable treatment blueprints, `treatment_plans` table with typed `plan_type` discriminator, proper RLS policies, GIN indexes on the JSONB columns, and foreign keys linking to the existing IVF domain tables. All correct on the first pass.
+
+**Why it worked:** Schema design has a well-understood design space. The AI could enumerate options, compare trade-offs against concrete constraints (team size, existing data model, clinical requirements), and generate correct SQL. The human decision — JSONB over normalization — was informed by the analysis but was ultimately a judgment call about what mattered more: theoretical data integrity or practical maintainability.
+
+## 3. The local-first AI assistant (29x speedup)
+
+This was the best single session of the entire project. It produced the largest performance improvement, required the least debugging, and followed the clearest plan.
+
+The AI assistant originally routed every user message to the backend `/ai/chat` endpoint, which made **two OpenAI API roundtrips** per query — one to select a function/tool, one to summarize the result. Most queries were simple lookups: "What are Sarah's allergies?", "Appointments today?", "How many patients do I have?"
+
+I wrote a plan (`happy-doodling-truffle.md`) with a clear philosophy: **use on-device/local processing wherever possible. The remote AI API should only be used when local processing genuinely can't handle the query.**
+
+The plan mapped every query type to a processing strategy:
+
+| Query type | Strategy | Latency | API calls |
+|-----------|----------|---------|-----------|
+| "Show my patients" | Regex → REST call → template | ~100ms | 0 |
+| "Sarah's allergies?" | Regex → cache lookup → REST → template | ~100ms | 0 |
+| "Add penicillin allergy for Sarah" | Regex → confirmation card → REST POST | ~100ms | 0 |
+| "Which meds interact with her allergy?" | Fallback → OpenAI function calling | ~3.1s | 1 |
+
+The implementation created three files with clean boundaries: an intent pattern matcher that used regex to detect query types (10 intents covering patient lookups, appointments, allergies, medications, and more), a patient cache with fuzzy name resolution (Levenshtein distance matching so "Sarha" resolves to "Sarah"), and an orchestrator that connected detection, resolution, fetching, and response formatting.
+
+The result: **~100ms for 80% of queries** (down from ~3.1 seconds). A question like "What are Sarah's allergies?" went from two OpenAI API roundtrips to a simple regex match, cache lookup, and REST call — zero API cost, 30x faster. The 20% that needed actual reasoning (drug interactions, treatment comparisons) still fell back to OpenAI. Zero regression in functionality.
+
+**Why it worked:** The architecture was designed upfront as a deterministic decision tree, not a creative problem. Each component had a clear interface and a single responsibility. The AI generated clean, testable code because the boundaries were explicit and the success criteria were measurable — response time, API call count, functional parity.
+
+## 4. Mobile app scaffolding
+
+Going from "Can we build an app for this project?" to a working Expo project with auth, tab navigation, and speech recognition happened in a single session (`4f304fcf`). But the most impressive part wasn't the scaffolding — it was the research that preceded it.
+
+Before writing any code, the AI synthesized research from healthcare informatics literature (JAMIA, AMA Digital Health surveys, KLAS Research, Nuance/DAX case studies) to answer: *how do doctors actually use mobile EHR apps?* The findings were concrete:
+
+- **Sessions are 1-3 minutes**, focused on retrieving one specific thing before walking into a room
+- **"Five seconds at the door"** is the dominant pattern — check allergies, last vitals, or reason for visit before entering
+- **Mobile = read, desktop = write** — doctors won't write complex notes on a phone; they want voice dictation and desktop review/signing
+- **#1 EHR mobile complaint:** authentication friction (forced re-login every 15 minutes across 80+ phone unlocks per shift)
+- **Voice adoption is real but narrow:** ~37% use voice dictation, concentrated on post-visit notes, not navigation commands
+
+These findings drove every scope decision. The plan (`validated-stirring-goose.md`) specified what to build *and what not to build*:
+
+- **Yes:** Patient lookup, today's schedule, voice-to-text notes, Face ID auth, AI chat for information retrieval
+- **No:** Complex order entry, billing, imaging review, care plan construction, full note templates
+
+The AI then scaffolded the entire `mobile/` directory: Expo Router with `(auth)` and `(tabs)` groups, Zustand state management, a `services/api.ts` client sharing auth tokens with the web app, Face ID via `expo-local-authentication`, and speech recognition via `expo-speech-recognition`. It configured `app.json`, set up the iOS build pipeline, and created the initial three-tab layout (Today / Patients / Assistant).
+
+**Why it worked:** Scaffolding is the ultimate pattern-replication task. The research-to-plan-to-code pipeline produced clear requirements, and the AI's job was to fill in a template. Expo projects have a well-documented structure, React Native components follow known patterns, and the API client was a direct port of the web app's existing `fetchApi` utility.
+
+**What surprised me:** The research synthesis was more valuable than the code generation. The "mobile = read, desktop = write" insight prevented me from building features that doctors would never use. The AI saved me from over-engineering the mobile app by surfacing domain-specific evidence, not just technical capabilities.
+
+## The common thread
+
+Every 10x task shared three properties:
+
+1. **Clear specification** — A plan or design doc existed before coding started. The plan specified *what* to build and the AI's job was *how*.
+2. **Established patterns** — The implementation followed a known template (CRUD, migration, scaffold) that the AI could replicate from existing code in the project.
+3. **Objective success criteria** — "Does it compile? Do the tests pass? Does the API return the right data?" There was no ambiguity about what "done" looked like.
+
+When any of these were missing — when the task required exploration, debugging, or judgment under uncertainty — the experience was very different. That's the [next post](/blog/where-ai-struggles).
+
+---
+
+*Previous: [Building a Healthcare App with AI Coding Agents](/blog/building-with-ai-agents) | Next: [Where AI Coding Struggles](/blog/where-ai-struggles)*

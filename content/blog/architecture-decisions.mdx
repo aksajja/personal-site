@@ -1,0 +1,153 @@
+---
+title: "Architecture Decisions Through an AI Lens"
+date: "2026-02-22"
+excerpt: "JSONB vs normalized schemas, local-first AI, mobile scope decisions — how having an AI pair programmer changes the way you design systems."
+coverImage: "/images/personal/hagia-sophia-blue.jpg"
+tags: ["AI", "Architecture", "Software Engineering", "Series"]
+---
+
+*Part 5 of 6 in the [AI Coding Agents series](/blog/building-with-ai-agents).*
+
+## Design with a co-pilot
+
+The previous posts covered [where AI coding helps](/blog/where-ai-shines), [where it struggles](/blog/where-ai-struggles), and [how testing keeps it honest](/blog/test-driven-ai). This post examines something more subtle: how having an AI pair programmer changes the *architecture decisions themselves*.
+
+The short version: AI is surprisingly good at enumerating options and analyzing trade-offs. It can generate an 18,000-word architecture document exploring five schema approaches, complete with comparison tables, SQL examples, and edge case analysis. But the judgment call — which approach to actually use — is still yours. And the quality of that judgment depends on asking the right questions, not on having the right AI.
+
+Four architectural decisions from Doctor Dashboard illustrate this dynamic.
+
+## 1. JSONB vs normalized schemas: the illusion of relational safety
+
+The biggest schema decision was how to store medications within treatment plans. The conventional approach: a normalized `plan_medications` junction table with foreign keys to a medications catalog, referential integrity enforced by the database.
+
+I came to this decision expecting normalization to win. I'm a database person — I like foreign keys, I like constraints, I like schemas that prevent bad data at the database level. The AI's job was to build both designs and compare them.
+
+It did exactly that. The plan (`floofy-marinating-feigenbaum.md`) ran to 18,000 words and produced this comparison table:
+
+| Factor | Normalized `plan_medications` | JSONB in `treatment_plans` |
+|--------|-------------------------------|---------------------------|
+| Cross-patient queries ("who's on Cetrotide?") | SQL JOIN | AI queries JSONB |
+| Referential integrity on drug names | FK constraint (only if `med_catalog_id` NOT NULL) | None — AI normalizes fuzzy names |
+| Allergy safety checks | **Still requires AI** for class-level matching | **Still requires AI** |
+| Extra tables/endpoints to maintain | Yes (`plan_medications`, catalog) | No |
+| Domain encapsulation | Breaks — IVF module must coordinate with medication module | Preserved — each domain owns its data |
+| Sync complexity | Must keep domain JSONB and relational table in sync | None |
+
+The deciding factor was row 3: allergy safety checks. Our `allergies` table stores allergens as free text — "Penicillin", "sulfa drugs", "shellfish." A SQL JOIN between a medication named "Amoxicillin" and an allergen named "Penicillin" returns zero rows — even though Amoxicillin is a penicillin-class antibiotic. The allergy safety check *requires* semantic understanding: drug class membership, brand-to-generic mappings, cross-reactivity rules. A relational schema can't encode these relationships. You need an AI or a drug interaction database either way.
+
+This means normalization gives **illusory safety**. The schema *looks* like it's protecting patients from drug-allergy interactions, but it fundamentally cannot. The safety comes from the AI layer that interprets the data, not from the database structure that stores it.
+
+We went with JSONB. The `treatment_plans` table stores medications, goals, monitoring schedules, and phases as JSONB columns, with a `plan_type` discriminator (IVF, chronic, surgical, acute, mental health) and GIN indexes for efficient JSONB queries. This kept domain data encapsulated within each treatment plan rather than spread across junction tables.
+
+**What the AI contributed:** The exhaustive comparison across six factors, the SQL for both approaches with RLS policies and indexes, and the critical insight about allergy-checking semantics. The "illusory safety" framing came from its analysis — I wouldn't have articulated it that way on my own.
+
+**What the AI couldn't decide:** Whether the engineering team (me, solo) could afford the maintenance burden of an extra junction table, its API surface, and the sync complexity between domain JSONB and the relational view. That was a resource and maintenance judgment, not a technical one.
+
+## 2. Local-first AI: the 29x decision
+
+The AI assistant architecture — [covered in detail in Post 2](/blog/where-ai-shines) — was the best example of a decision that the AI's analysis directly improved.
+
+The before state: every message to the assistant made two OpenAI API calls (~3.1 seconds, ~$0.003). The question: is there a better architecture?
+
+The AI mapped out three options:
+
+| Option | Latency | API cost | Engineering cost | Risk |
+|--------|---------|----------|-----------------|------|
+| **Status quo** (always OpenAI) | ~3.1s | ~$0.003/query | Zero | Low — already works |
+| **Hybrid** (local regex + remote fallback) | ~100ms for 80% | ~$0.001/query avg | Medium — 3 new files | Medium — two code paths |
+| **Fine-tuned local model** | ~50ms for 95% | $0 | Very high — training pipeline, model hosting | High — no fallback, maintenance burden |
+
+The key analytical step was quantifying the query distribution. The AI analyzed our chat logs and categorized queries: **80% were simple lookups** ("What are Sarah's allergies?", "Appointments today?") that regex could handle with no AI needed. **15% were parameterized lookups** ("Show me patients with penicillin allergies") — still local. Only **5% required genuine reasoning** ("Which of Sarah's meds might interact with her allergy?") where OpenAI was actually necessary.
+
+This distribution made Option 2 the obvious choice. **95% of queries at ~100ms instead of 3.1s, with zero loss in capability for the 5% that need reasoning.** The implementation cost was modest (three files, ~500 lines), and the fallback to OpenAI meant zero risk of capability regression.
+
+The AI built the full implementation from this analysis in a single session — an intent pattern matcher, a patient cache with fuzzy name resolution, and an orchestrator connecting the pieces.
+
+The architecture quality came from the *quality of the analysis*, not from the AI's coding ability. The code was straightforward. The decision to build it — and more importantly, the confidence that 95% of queries were simple enough for regex — came from the data analysis that preceded the code.
+
+## 3. Mobile scope decisions: research-driven restraint
+
+The mobile app decision is interesting because the AI's biggest contribution wasn't writing code — it was synthesizing research that prevented me from building the wrong thing.
+
+When I asked "Can we build an app for this project which has speech recognition features?", the AI's first move wasn't scaffolding. It was research. It pulled findings from healthcare informatics literature — JAMIA, AMA Digital Health surveys, KLAS Research, Nuance/DAX case studies (2019-2024) — and presented them as concrete behavioral patterns:
+
+> **"Five seconds at the door"** is the dominant pattern — check the next patient's allergies, last vitals, or reason for visit before entering.
+
+> **Mobile = read, desktop = write.** Docs won't write complex notes on a phone — they want voice dictation + desktop review/signing.
+
+> **#1 EHR mobile complaint:** authentication friction (being forced to re-login every 15 min across 80+ phone unlocks per shift).
+
+> **Voice adoption is real but narrow:** ~37% of doctors use voice dictation; usage concentrates on post-visit note dictation, not navigation commands or order entry. Voice navigation ("go to patient X") has very low adoption — docs find tapping faster.
+
+> **Patient sessions are 2-4 minutes**, almost always triggered by a push notification. Notification-driven opens are 3-5x higher than ambient opens.
+
+These findings led to scope decisions I wouldn't have made otherwise:
+
+| Feature | My instinct | Research says | Decision |
+|---------|------------|---------------|----------|
+| Complex order entry | "Full-featured app" | Doctors won't use it on mobile | **Cut** |
+| Billing / coding | "Might be useful" | Desktop-only workflow everywhere | **Cut** |
+| Full note templates | "Speech can handle it" | Docs want voice → text, then desktop editing | **Cut** |
+| Face ID auth | "Nice to have" | #1 mobile EHR complaint is auth friction | **Must have** |
+| Voice-to-text notes | "Core feature" | 37% adoption, post-visit dictation | **Build** |
+| Push notifications | "Can add later" | Primary entry point for patients, not app home screen | **Must have** |
+
+The platform decision was similarly research-informed:
+
+| Option | Pros | Cons | Decision |
+|--------|------|------|----------|
+| **Expo** | Reuses TypeScript/React, same API client, `expo-speech-recognition` for on-device STT | Not pure native perf | **Chosen** — code reuse + purpose-built UI is the right trade-off for solo dev |
+| Capacitor | Minimal rewrite of web app | Wraps the *same* web UI — a purpose-built mobile UI is the point | Rejected |
+| Swift/SwiftUI | Maximum Neural Engine access for speech | Completely different stack, zero code reuse with web app | Rejected for v1 |
+
+**What surprised me:** The AI's research synthesis was more valuable than all the code it wrote for the mobile app. The "mobile = read, desktop = write" insight alone saved me from building features that doctors statistically never use on phones. That's not a coding contribution — it's a product strategy contribution. And it happened because I asked "can we build an app?" instead of "build me an app."
+
+## 4. Domain-specific schemas: when to go deep
+
+The IVF module illustrates a design tension that comes up in every medical software project: when should you specialize your schema for a medical domain vs keep it generic?
+
+The conversation started in session `744a0864` (February 22nd) with a unified approach: the `treatment_plans` table with JSONB `medications`, `goals`, and `phases` columns. Generic enough for any clinical domain — IVF, chronic disease management, post-surgical care, mental health protocols.
+
+But as we discussed IVF specifically, the data requirements overwhelmed the generic structure:
+
+```
+ivf_cycles
+  ├── follicle_measurements
+  │     (per-follicle, per-date: follicle_id, size_mm, location)
+  ├── hormone_levels
+  │     (E2, LH, FSH, progesterone — time series per cycle day)
+  ├── embryology_reports
+  │     (fertilization rate, day-3 grade, blastocyst grade, biopsy status)
+  ├── stimulation_protocols
+  │     (medication adjustments per-day with dose changes)
+  └── pgt_results
+        (genetic testing per-embryo with specific variant results)
+```
+
+Follicle measurements are inherently relational: a cycle has many monitoring visits, each visit measures multiple follicles, each measurement includes size, location, and morphology. No JSONB column can cleanly represent this without turning into an unqueryable nested blob. You need `WHERE follicle_measurements.size_mm > 18 AND follicle_measurements.cycle_id = ?` — that's a SQL query, not a JSONB path expression.
+
+The AI proposed the solution: **a layered architecture**. The generic `treatment_plans` table (with its `plan_type` discriminator, JSONB medications, goals, and phases) handles most clinical domains. For IVF, the treatment plan links optionally to `ivf_cycles`, which in turn has its own normalized detail tables — follicle measurements, hormone levels, embryology reports, stimulation protocols, and genetic testing results — all relational and queryable.
+
+The `plan_type` discriminator tells the application which domain-specific tables to join. For general medicine (chronic disease, surgical, acute), the treatment plan itself holds everything — medications in JSONB, goals in JSONB, phases in JSONB. For IVF, the treatment plan holds the overview, and the cycle-specific data lives in its own normalized schema.
+
+**What I decided:** That IVF was specialized enough to warrant its own tables. This was a judgment call: another developer might have forced everything into JSONB for consistency. I chose domain-specific tables because the queries mattered — an IVF doctor needs to query "follicles > 18mm across all monitoring visits this cycle" efficiently, and that's a SQL query, not a JSONB search.
+
+I also decided the `plan_id` FK on `ivf_cycles` should be optional — not every IVF cycle starts as part of a treatment plan. Some cycles are standalone, and forcing every cycle through the treatment plan workflow would add friction to the clinical workflow.
+
+**What the AI contributed:** The complete SQL for both layers, RLS policies that properly gate IVF data (only the treating doctor and the patient can see cycle data), GIN indexes on the JSONB columns, and the `plan_type` discriminator pattern. It also correctly identified that `stimulation_protocols` should keep its medications in JSONB (not normalized) because protocol medications change daily and the JSONB represents a snapshot of each day's regimen, not a catalog of available drugs.
+
+## The meta-lesson
+
+Having an AI that can generate architecture documents at near-zero cost changes how you design systems in three specific ways:
+
+**You explore more options.** Before AI, writing a 300-line comparison of five schema approaches took a full day. With AI, it takes a session. The JSONB vs normalization analysis surfaced the "illusory safety" insight that I wouldn't have reached if I'd just gone with my default preference for normalization. The mobile app research surfaced behavioral data that changed the feature scope. These explorations happened because the cost of analysis dropped to near zero.
+
+**You get better trade-off analysis.** The AI is genuinely good at enumerating pros, cons, and edge cases for each option — *if you ask it specific questions*. "Should I use JSONB?" gets a generic answer. "Our allergens are free-text. Does normalizing medications actually improve allergy safety checks?" gets the insight that changed the decision.
+
+**You need more discipline, not less.** When generating an architecture document is cheap, the temptation is to over-engineer — to add the extra table, the extra abstraction, the extra layer — because the AI can implement it quickly. The restraint to say "JSONB is good enough, we don't need the junction table" or "cut complex order entry from mobile, doctors won't use it" requires human judgment about maintenance burden, team size, clinical workflow, and what actually matters for the product.
+
+The AI makes the *analysis* cheap. It doesn't make the *judgment* cheap. And in architecture, the judgment is the whole game. The next post explores a domain where that judgment has regulatory consequences: [authorization for healthcare data](/blog/authorization-ehr).
+
+---
+
+*Previous: [Test-Driven Discipline with AI Agents](/blog/test-driven-ai) | Next: [Authorization as Architecture](/blog/authorization-ehr)*

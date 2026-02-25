@@ -1,0 +1,126 @@
+---
+title: "Authorization as Architecture: Securing EHR Data with Row Level Security"
+date: "2026-02-25"
+excerpt: "Why Row Level Security is the right foundation for healthcare data, how we built a multi-tenant access control system, and the security bug that taught me to question every policy."
+coverImage: "/images/personal/authorization-ehr-cover.jpeg"
+tags: ["Security", "Architecture", "Healthcare", "Software Engineering", "Series"]
+---
+
+*Part 6 of 6 in the [AI Coding Agents series](/blog/building-with-ai-agents).*
+
+## Why authorization is different in healthcare
+
+In most web applications, authorization is a feature: "can this user edit this post?" In healthcare, authorization is a *legal requirement*. HIPAA mandates that access to Protected Health Information (PHI) be limited to the minimum necessary for the task at hand. A doctor viewing another doctor's patient records isn't a product bug — it's a regulatory violation that can result in fines, lawsuits, and loss of medical licensure.
+
+This changes the engineering calculus. In a typical SaaS app, an authorization bug means someone sees data they shouldn't. Annoying, fixable, maybe a PR issue. In healthcare, the same bug means a privacy breach that must be reported to the Department of Health and Human Services, potentially to the affected patients, and possibly to the media if it affects more than 500 individuals.
+
+Doctor Dashboard stores patient demographics, allergies, medications, clinical notes, lab reports, treatment plans, IVF cycle data (follicle measurements, hormone levels, embryology reports), and appointment histories. Every one of these is PHI. Every one needs row-level access control that prevents Doctor A from seeing Patient B's data unless explicitly authorized.
+
+## Why Row Level Security
+
+We could have implemented authorization at the application layer — middleware that checks permissions before returning data. Most EHR systems do this. It works, but it has a fundamental weakness: **every new endpoint, every new query, every new feature must remember to check permissions.** Forget once, and you have a data breach.
+
+Supabase's Row Level Security (RLS) moves authorization to the database layer. Every query, from every client, through every endpoint, passes through the same policy engine. If a row doesn't pass the policy check, it's invisible to the query — it doesn't appear in results, it can't be updated, it can't be deleted.
+
+The policy is straightforward: a user can view a patient record if they are the patient themselves (primary owner) or if they have an approved access request. This policy runs on *every* SELECT against the patients table — no application code can bypass it, no new endpoint can forget it.
+
+The advantage isn't that RLS policies are smarter than application-layer checks. They're not. The advantage is that they're *inescapable*. A new developer adding a reporting endpoint doesn't need to remember to check permissions — the database does it automatically. An AI coding agent generating a new query doesn't need to know about the permission model — the database enforces it regardless.
+
+This matters especially when building with AI. As described in the [previous posts](/blog/where-ai-struggles), the AI generates code without cross-session context. It doesn't know about the authorization model unless explicitly told. RLS means that even when the AI forgets about permissions (and it will), the database catches the oversight.
+
+## The access model: three authorization layers
+
+Doctor Dashboard's authorization is built on three layers, each enforced at the database level:
+
+### Layer 1: Patient ownership
+
+Every patient record has a `primary_owner_id` — the patient themselves. Patients can always see, update, and manage their own records. This is the simplest policy and the hardest to get wrong. But it has an important implication: if a patient deletes their account, their `primary_owner_id` becomes NULL, and the data becomes inaccessible to everyone through the patient ownership path. This is intentional — orphaned PHI should not be casually accessible.
+
+### Layer 2: Doctor access requests
+
+Doctors don't automatically have access to patient data. They must request access, and the patient (or an admin) must approve it. This is enforced through a `patient_access_requests` table that tracks each request's status (pending, approved, denied, or revoked), who requested it, when it was resolved, and by whom. Every data table — medications, vitals, clinical records, notes, lab reports, documents, treatment plans — checks this table in its RLS policy: does the current user have an approved access request for this patient?
+
+Access is:
+- **Explicit** — Doctors must request, patients must approve
+- **Revocable** — Patients can change status to `'revoked'` at any time
+- **Auditable** — Every request, approval, denial, and revocation is timestamped and attributed
+- **Granular** — Access is per-patient, not per-role. A doctor has access to specific patients, not "all patients"
+
+### Layer 3: Role-based defaults
+
+Some operations are gated by user role rather than patient-specific access:
+
+For example, only users with the `doctor` role can create clinical records. This prevents patients from creating clinical records, prescribing medications, or modifying treatment plans — operations that should only be performed by licensed providers.
+
+## The `created_by` security bug
+
+The most instructive moment in the entire authorization design was a security bug that I caught during a manual review session on February 9th (session `6a65a74b`). It's worth examining in detail because it illustrates how authorization bugs hide in plain sight.
+
+### The original policy
+
+When we first built the RLS policies, they included a check: if you created the patient record (`created_by`), or you are the patient themselves (`primary_owner_id`), you can see it. This *sounds* reasonable. The doctor who onboarded a patient should be able to see that patient's data, right?
+
+### Why it's a security hole
+
+The `created_by` check creates **permanent, unrevokable access**. Consider this scenario:
+
+1. Dr. Smith registers Patient Jones in 2024
+2. Patient Jones switches to Dr. Garcia in 2025
+3. Patient Jones explicitly revokes Dr. Smith's access via the `patient_access_requests` system
+4. **Dr. Smith can still see all of Patient Jones's data** — because `created_by` still equals Dr. Smith's user ID
+
+The `created_by` path bypasses the entire access request system. It can't be revoked by the patient. It doesn't expire. It persists even if the doctor-patient relationship has ended. In a healthcare context, this violates the "minimum necessary" principle: Dr. Smith no longer needs access to Patient Jones's data, but the schema grants it permanently.
+
+### How it propagated
+
+The `created_by` check wasn't just on the `patients` table. It propagated to every child table through subqueries. The medications policy, for example, checked the `patients` table for authorization — which *looked* correct, but inherited the flaw. Any table that verified access by querying the patients table carried the same backdoor: vitals, clinical records, notes, lab reports, documents, treatment plans.
+
+### The inconsistency that revealed it
+
+I noticed the bug because different tables had *different* RLS policies, and they produced different error codes for the same unauthorized operation — lab reports returned 403 (proper authorization check via `patient_access_requests`), while medications returned 401 (RLS silently blocked the query, misinterpreted as an authentication failure). The inconsistency was the clue that something was structurally wrong.
+
+### The fix
+
+We removed `created_by` from all access control policies across 6 tables (16 total policy changes). Access now flows through only two paths: you are the patient (primary owner), or you have an approved access request. No exceptions.
+
+We kept `created_by` as a column for audit purposes — it's useful to know who registered a patient — but removed it from every `USING` and `WITH CHECK` clause.
+
+This was a **breaking change**. Doctors who had created patients but never gone through the access request flow lost access immediately. I made this decision consciously: the correct behavior is that doctors must request access through the proper channel, even if they originally created the record. The access request system exists precisely so that patients can control who sees their data.
+
+### Why the AI missed it
+
+The AI generated the original `created_by` policy because it's a common pattern in multi-tenant SaaS applications. "Users can see things they created" is a perfectly reasonable policy for a project management app or a note-taking app. The AI applied a generic authorization pattern to a domain where that pattern is a security violation.
+
+The AI couldn't know that healthcare data has different access control semantics than generic application data. It needed to be told: "In healthcare, the person who *created* a record and the person who should *access* a record are different concepts. Access must be explicitly granted and revocable by the patient."
+
+This is exactly the kind of domain-specific judgment that the [earlier posts](/blog/where-ai-struggles) identified as AI's blind spot — and exactly the kind of bug that RLS makes *catchable* because it concentrates authorization logic in a small number of policy statements rather than scattering it across hundreds of API endpoints.
+
+## Consistent policy patterns
+
+After the `created_by` fix, we established a single, consistent pattern for all data tables. Every table gets three policies: SELECT (patient ownership or approved access request), INSERT (approved access request plus audit trail via `created_by`), and UPDATE (approved access request). Every new table follows this pattern. The AI can scaffold a new data table and the RLS policies will be correct by template, not by judgment.
+
+## What RLS can't do
+
+RLS enforces row-level access but doesn't address several healthcare authorization needs:
+
+**Field-level access control.** A nurse might need to see a patient's medication list but not their psychiatric notes. RLS operates on rows, not columns. Field-level restrictions require application-layer filtering or database views that expose column subsets.
+
+**Temporal access.** A consulting doctor should have access for the duration of the consultation, not permanently. Our `patient_access_requests` table has a `status` field that can be set to `'revoked'`, but there's no automatic expiration. A `valid_until TIMESTAMPTZ` column with a policy check `AND (valid_until IS NULL OR valid_until > NOW())` would address this — it's on the roadmap.
+
+**Break-the-glass access.** In emergency situations, a doctor may need immediate access to a patient's records without going through the approval workflow. This is a real clinical need (the patient might be unconscious) and a real security challenge (it can be abused). We haven't implemented this yet, but the pattern is: allow access with a separate `emergency_access` flag and an audit trail that triggers mandatory review.
+
+**Consent management.** HIPAA's "minimum necessary" standard means that even an authorized doctor should only see the data relevant to their treatment. A dermatologist treating a skin condition shouldn't need access to reproductive health records. This level of granularity requires purpose-of-access tagging, which is beyond what row-level policies can express.
+
+## Lessons learned
+
+Building authorization for healthcare data taught me three things:
+
+**Authorization is architecture, not a feature.** Treat it as a foundational layer that every other component builds on, not as middleware you add after the feature is built. RLS enforces this naturally — you can't query a table without passing through its policies.
+
+**Generic patterns are dangerous in specialized domains.** The `created_by` backdoor was a correct pattern applied to the wrong domain. The AI generated it because it's common in SaaS apps. Catching it required domain-specific knowledge about patient data ownership that no general-purpose coding tool possesses.
+
+**Consistency is the most important security property.** The bug was revealed by *inconsistency* — different tables had different policies, producing different error codes. After the fix, every table follows the same pattern. New tables can be added by copying the template. This consistency is what makes the system auditable and maintainable, especially when building with AI agents that don't carry context between sessions.
+
+---
+
+*Previous: [Architecture Decisions Through an AI Lens](/blog/architecture-decisions) | Back to [series overview](/blog/building-with-ai-agents)*
