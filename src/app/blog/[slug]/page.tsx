@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { MDXRemote } from "next-mdx-remote/rsc";
 import rehypePrettyCode from "rehype-pretty-code";
 import { getAllSlugs, getPostBySlug } from "@/lib/blog";
+import { BASE_PATH } from "@/lib/constants";
 
 interface Props {
   params: Promise<{ slug: string }>;
@@ -85,7 +86,7 @@ export default async function BlogPostPage({ params }: Props) {
         </Link>
         {post.coverImage && (
           <Image
-            src={post.coverImage}
+            src={`${BASE_PATH}${post.coverImage}`}
             alt={post.title}
             width={768}
             height={400}

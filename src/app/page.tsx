@@ -1,5 +1,6 @@
 import Link from "next/link";
 import Image from "next/image";
+import { BASE_PATH } from "@/lib/constants";
 import positions from "@/data/resume/positions";
 import degrees from "@/data/resume/degrees";
 import skills from "@/data/resume/skills";
@@ -58,7 +59,7 @@ export default function Home() {
         </div>
         <div className="shrink-0">
           <Image
-            src="/images/personal/istanbul-map-portrait.jpg"
+            src={`${BASE_PATH}/images/personal/istanbul-map-portrait.jpg`}
             alt="Akarshan Sajja"
             width={160}
             height={160}
@@ -215,21 +216,21 @@ export default function Home() {
         </p>
         <div className="mt-6 grid grid-cols-3 gap-2">
           <Image
-            src="/images/personal/hagia-sophia-dome.jpg"
+            src={`${BASE_PATH}/images/personal/hagia-sophia-dome.jpg`}
             alt="Hagia Sophia"
             width={300}
             height={200}
             className="rounded-lg object-cover w-full h-28"
           />
           <Image
-            src="/images/personal/nyc-skyline-night.jpg"
+            src={`${BASE_PATH}/images/personal/nyc-skyline-night.jpg`}
             alt="NYC skyline"
             width={300}
             height={200}
             className="rounded-lg object-cover w-full h-28"
           />
           <Image
-            src="/images/personal/sultanahmet-dusk.jpg"
+            src={`${BASE_PATH}/images/personal/sultanahmet-dusk.jpg`}
             alt="Sultanahmet at dusk"
             width={300}
             height={200}
