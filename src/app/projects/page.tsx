@@ -50,7 +50,7 @@ export default function ProjectsPage() {
                 rel="noopener noreferrer"
                 className="text-sm text-[var(--color-accent)] hover:text-[var(--color-accent-hover)] transition-colors"
               >
-                View on GitHub &rarr;
+                View project &rarr;
               </Link>
             </div>
           )}

@@ -20,7 +20,7 @@ const projects: Project[] = [
       "TypeScript",
       "OpenAI",
     ],
-    link: "https://github.com/aksajja/doctor-dashboard",
+    link: "https://www.interpretablehealth.com",
     featured: true,
   },
   {

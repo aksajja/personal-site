@@ -59,7 +59,7 @@ export default function Home() {
         </div>
         <div className="shrink-0">
           <Image
-            src={`${BASE_PATH}/images/personal/istanbul-map-portrait.jpg`}
+            src={`${BASE_PATH}/images/me.jpg`}
             alt="Akarshan Sajja"
             width={160}
             height={160}
