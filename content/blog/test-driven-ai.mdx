@@ -1,0 +1,126 @@
+---
+title: "Test-Driven Discipline with AI Agents"
+date: "2026-02-19"
+excerpt: "How 69 Playwright tests became the contract that kept AI-generated code honest — and why the hard part of testing is still human work."
+coverImage: "/images/personal/glass-obelisk.jpg"
+tags: ["AI", "Testing", "Software Engineering", "Series"]
+---
+
+*Part 4 of 6 in the [AI Coding Agents series](/blog/building-with-ai-agents).*
+
+## The forcing function
+
+After the debugging pain described in the [previous post](/blog/where-ai-struggles), one practice kept the project from going off the rails: **a growing end-to-end test suite that ran before every commit.**
+
+By the end of the project, Doctor Dashboard had **69+ Playwright e2e tests** covering appointments, patient management, auth flows, medication CRUD, document uploads, search, and reschedule/confirm workflows. These tests weren't just verification — they were the *specification* that made AI coding viable at scale.
+
+The insight wasn't obvious at first. I didn't start the project thinking "I need tests to control the AI." I started writing tests because I was building a healthcare app and correctness matters. But the side effect — that the test suite acted as a contract the AI had to satisfy — turned out to be the most important engineering decision of the entire project.
+
+## Tests as specification
+
+The difference between a productive AI session and a debugging marathon consistently came down to one thing: how specific the starting prompt was.
+
+### The vague approach
+
+"Build appointment scheduling with conflict detection."
+
+This produced a working feature in session `c9b07fca` — 9 user messages, 30 assistant messages, clean implementation. Good.
+
+Then came the debugging: session `adadaab1` (17 assistant messages, tests failing), `41bc4de8` (101 assistant messages, deep debugging), `40925a82` (35 assistant messages, re-rendering issues), `c5d17442` (13 assistant messages, more test failures). Four follow-up sessions, 166 combined assistant messages, all because the original implementation had untested edge cases.
+
+Total cost: 1 feature session + 4 debugging sessions = **~200 assistant messages**.
+
+### The specific approach
+
+"Make this test pass" — where the test creates an appointment, then tries to book the same time slot for a different patient, and asserts that a scheduling conflict message appears and the dialog stays open so the user can pick a different time.
+
+When the AI had this test to satisfy, the session was short and focused. The test defined the exact behavior: same time slot, different patient, expect a visible conflict message, dialog stays open. Every design decision was embedded in the assertions. The AI didn't need to guess at requirements.
+
+The test-driven sessions averaged **~30 assistant messages**. The "build this feature" sessions averaged **~50** — and that's before counting the debugging sessions that followed.
+
+### The pattern across the project
+
+I tracked this across all 73 sessions:
+
+| Approach | Sessions | Avg assistant messages | Follow-up debugging sessions |
+|----------|----------|----------------------|------------------------------|
+| "Build this feature" | ~15 | ~50 | 1-4 per feature |
+| "Make this test pass" | ~10 | ~30 | 0-1 per feature |
+| Debugging (unplanned) | ~25 | ~200 | N/A (already debugging) |
+
+The best sessions started with "here's the test, make it pass." The worst started with "build this feature" and evolved into multi-session debugging marathons.
+
+## The test isolation evolution
+
+The test suite itself went through three architectural phases — each driven by catastrophic failures in the previous approach. This evolution is worth documenting because it illustrates how *testing AI-generated code* has its own set of challenges.
+
+### Phase 1: Global setup, no cleanup
+
+The initial approach seemed reasonable: create test users and seed data in a global setup, run all tests in parallel, clean up everything in a global teardown.
+
+Tests passed individually but failed together. The root cause: `fullyParallel: true` in `playwright.config.ts` meant multiple spec files ran simultaneously. Both `appointments.spec.ts` and `appointment-reschedule.spec.ts` created appointments for `patient1` at overlapping time slots. Scheduling conflicts caused silent failures. Appointments accumulated (21+ across all files) with no cleanup until the global teardown.
+
+The AI generated this setup because it follows a common Playwright pattern — and it *is* a common pattern, for apps without shared mutable state. But our test patients were shared resources, and appointment creation mutated their schedules.
+
+### Phase 2: Disable parallelism (the band-aid)
+
+Setting `fullyParallel: false` in the Playwright config took 30 seconds and tests ran serially, eliminating timing-based conflicts. But execution time tripled (from ~45s to ~2+ minutes), and within-file isolation was still broken — earlier tests in the same file left appointment data that affected later tests.
+
+I kept this for two weeks because it worked. It was the AI's first suggestion and it stopped the bleeding. But serial execution on a test suite that grew to 69+ tests became untenable.
+
+### Phase 3: Proper isolation (the real fix)
+
+The plan (`deep-cuddling-tome.md`) specified a three-layer isolation strategy:
+
+**Layer 1: Per-file test patients.** Each spec file gets exclusive patients. No shared data between files means no parallel execution conflicts — appointments tests use one set of patients, medications tests use another, with zero overlap.
+
+**Layer 2: `afterEach` cleanup hooks.** Each test tracks the IDs of resources it creates and deletes them immediately after, rather than waiting for a global teardown.
+
+**Layer 3: Domain-based user cleanup.** The original cleanup tracked users by ID in a Python array — but users were created by a different process (TypeScript), so the array was always empty. The fix queries users by their test email domain, working regardless of which process originally created them.
+
+This evolution took **5+ sessions** spanning two weeks. The AI implemented each phase correctly in isolation — it could write the `afterEach` hooks, the cleanup functions, the per-file patient assignments. But it couldn't *predict* that Phase 1 would fail, or *anticipate* that Phase 2's band-aid would become a bottleneck. That systems-level thinking — seeing how test execution, database state, RLS policies, and parallel processing interact — required human observation of the actual failures.
+
+## Pre-commit as guardrail
+
+The most impactful engineering decision wasn't about the tests themselves — it was requiring the full suite to pass before every commit.
+
+The pre-commit hook ran the full E2E suite, linter, and format check before every commit. This created a critical feedback loop: the AI generated a feature, the pre-commit hook ran all 69+ tests, and if *anything* broke — even in an unrelated test file — the commit was blocked. The AI couldn't just make the new feature work; it had to keep *everything* working.
+
+Session `b8a9f990` captured this perfectly. After a long day of debugging appointment tests, the AI finished the feature, ran pre-commit hooks, and all 113 tests passed. But there was a more important case. In a later session, the AI built a new patient search endpoint. All tests for the search feature passed. But the pre-commit hook caught a regression: the new search endpoint changed a shared API response format that the appointment dialog relied on. An `appointments.spec.ts` test failed because the patient dropdown was now parsing a different response shape.
+
+Without the pre-commit gate, this regression would have shipped and surfaced days later as a mysterious appointment creation bug. With it, the AI caught the regression in the same session and fixed the response format before committing.
+
+This is the key insight: **pre-commit tests turn the AI's weakness (lack of cross-session context) into a strength.** The AI can't remember what it built last week, but the test suite *can*. The tests are the persistent memory that the AI lacks.
+
+## What tests can't catch
+
+E2E tests are excellent at verifying visible behavior. They're poor at catching the things that make healthcare software dangerous:
+
+**RLS policy gaps.** Our tests verified that authorized operations succeed. They didn't verify that *unauthorized* operations fail. When we later discovered that any doctor who initially created a patient record had permanent, unrevokable access to that patient's data — bypassing the entire access request system — no test caught it. The policy checked `auth.uid() = created_by`, which was technically correct (the creator *did* have access) but semantically wrong (access should require explicit patient approval). I noticed this during a manual code review, not from a test failure.
+
+**Architectural drift.** Tests verify behavior, not structure. Three different state management patterns (useState, custom hook, context provider) can all produce the same visible output. The tests pass, but the codebase becomes progressively harder to modify because the AI adds a fourth pattern in the next session.
+
+**Environment-specific behavior.** Tests run against local Supabase with known seed data. The cookie domain bug (working on `localhost`, broken on `doctor-dashboard.vercel.app`) was invisible to the test suite. So was the stale service key issue that only manifested after a `supabase db reset`.
+
+**Performance regressions.** The AI assistant was functionally correct before the local-first rewrite — it returned the right answers. It just took 3.1 seconds instead of 100ms. No test asserted on response time because we never wrote performance tests. The 29x improvement was driven by user experience judgment, not by a failing test.
+
+## The testing paradox
+
+Here's the uncomfortable truth: AI makes writing tests *faster* but doesn't make testing *better*.
+
+The AI can generate a Playwright test with proper selectors, waits, and assertions in seconds. It knows the Playwright API, it can infer the right locators from the DOM, and it handles async patterns correctly. The mechanical act of writing `expect()` calls is exactly the kind of well-defined, pattern-heavy task where AI excels (see [Post 2](/blog/where-ai-shines)).
+
+But the *hard part* of testing was never writing the `expect()` call — it was deciding *which* `expect()` calls matter. That requires:
+
+- **Experience:** Knowing that parallel test execution with shared state is a common failure mode
+- **Judgment:** Deciding that the `created_by` backdoor in RLS policies is a security gap worth testing, not a feature
+- **Systems thinking:** Understanding that cookie domain scoping depends on the deployment environment, and tests on `localhost` won't catch production-only bugs
+- **Adversarial thinking:** Writing the test that says "Doctor B should NOT be able to see Patient A's medications" — the test that proves unauthorized access fails
+
+The AI wrote 69 tests quickly. But the 5-6 tests that actually caught real bugs — the appointment conflict test, the patient access validation, the search regression — were tests where I specified the exact edge case to test based on bugs I'd already seen or anticipated. The AI didn't anticipate any of them. It generated the test code flawlessly, but it never said "you should also test what happens when..."
+
+The pattern is the same one from the [first post](/blog/building-with-ai-agents): **AI is a throughput multiplier on well-defined tasks.** "Write a test for this behavior" is well-defined. "Figure out what to test" is not. The testing discipline isn't writing tests — it's knowing what to test. That's still entirely human work.
+
+---
+
+*Previous: [Where AI Coding Struggles](/blog/where-ai-struggles) | Next: [Architecture Decisions Through an AI Lens](/blog/architecture-decisions)*

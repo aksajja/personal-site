@@ -1,0 +1,98 @@
+---
+title: "Building a Healthcare App with AI Coding Agents"
+date: "2026-02-12"
+excerpt: "What happens when a solo engineer uses AI coding agents to build a full-stack healthcare platform? A retrospective on pace, process, and the engineering discipline required."
+coverImage: "/images/personal/sultanahmet-dusk.jpg"
+tags: ["AI", "Software Engineering", "Retrospective", "Series"]
+---
+
+*Part 1 of 6 in the [AI Coding Agents series](/blog).*
+
+## The experiment
+
+Over the past month, I built [Doctor Dashboard](https://github.com/aksajja/doctor-dashboard) — a full-stack healthcare platform with a web dashboard, iOS mobile app, Python backend, and an AI-powered clinical assistant. The stack: React, Expo/React Native, FastAPI, Supabase (PostgreSQL), and OpenAI.
+
+What makes this interesting isn't the product — it's *how* it was built. The entire project was pair-programmed with AI coding agents (Claude Code), across **73 sessions**, **20 formal engineering plans**, and roughly a month of active development.
+
+This is the first post in a series examining where AI coding genuinely accelerated development, where it created costly mistakes, and the engineering discipline that made it viable.
+
+## Why a healthcare app?
+
+I wanted a domain that would *stress-test* AI coding — not just a CRUD app or a portfolio project, but something with real constraints. Healthcare hits every hard problem in software engineering simultaneously:
+
+- **Authorization matters.** A doctor seeing another doctor's patient records isn't a bug — it's a HIPAA violation. Row Level Security can't be "mostly right."
+- **Data models are complex.** A patient can have multiple treatment plans, each with medications, monitoring schedules, and domain-specific sub-schemas (IVF cycles with follicle measurements, hormone levels, embryology reports).
+- **Multi-platform is the norm.** Doctors want voice-first mobile, patients want web portals, and both need to hit the same backend with different permission models.
+- **Testing requires clinical thinking.** "Does the appointment conflict detection work?" isn't just a technical question — it's "what happens when two doctors try to book the same patient at overlapping times, and one has auto-confirmation enabled?"
+
+If AI coding can handle this, it can handle most production software. If it can't, the failure modes are instructive.
+
+## What I shipped
+
+Doctor Dashboard covers a wide surface area for a solo project:
+
+- **Web dashboard** — Patient management, appointment scheduling with conflict detection, clinical notes (time-windowed to prevent retroactive edits), document uploads with categorization, medication tracking, Google OAuth with role selection, and role-based access control
+- **iOS mobile app** — Expo/React Native with on-device speech recognition via Apple's Neural Engine, ambient visit recording that generates SOAP notes, and a context-aware AI chat assistant that inherits the currently viewed patient context
+- **Backend** — FastAPI with Supabase, Row Level Security across all 15+ tables, treatment plan templates with protocol support, IVF-specific clinical workflows, and a patient access request system where doctors must request and patients must approve data access
+- **AI assistant** — A local-first architecture: regex intent matching + patient name cache with Levenshtein fuzzy matching handles 80% of queries in ~100ms; OpenAI function-calling fallback for complex reasoning at ~3-5s
+
+Each of these would normally be a team-sized effort. The question: can AI coding agents compress that into a solo project?
+
+## The raw numbers
+
+Here's what the data shows from my Claude Code session history:
+
+- **73 chat sessions** over ~30 days (~2.4 sessions/day)
+- **20 formal engineering plans** — architecture docs, feature specs, debugging plans, test strategies
+- **69+ end-to-end tests** using Playwright, running before every commit via pre-commit hooks
+- **~65 MB** of raw conversation data, reducing to **~1.1 MB** of actual human-AI dialogue after stripping thinking blocks and tool execution (98% was internal AI reasoning and file operations)
+- Session sizes ranged from **7 to 737 messages** — the long ones were almost always debugging
+
+I wrote a Python script to extract and analyze all 73 sessions from Claude Code's JSONL chat logs. It strips thinking blocks, tool call metadata, and IDE-specific XML tags, then generates per-session summaries with message counts, text sizes, branch names, and timestamps. The raw data told a clear story about where time actually went.
+
+The distribution:
+
+| Category | Sessions | Avg messages | Character |
+|----------|----------|-------------|-----------|
+| Feature building | ~20 | 30-80 | Short, productive, plan-driven |
+| Debugging / test fixing | ~25 | 100-700+ | Long, painful, exploratory |
+| Infrastructure / ops | ~15 | 20-60 | Schema, auth, deployment |
+| Planning / design | ~10 | 10-40 | High signal, mostly discussion |
+
+The pattern: **AI is a throughput multiplier on well-defined tasks and a time sink on poorly-defined ones.** Sessions that started with a written plan were short and productive. Sessions that started with "fix this" or "why is this broken" were long and expensive.
+
+The starkest example: on January 28th, I burned through **four debugging sessions in a single day** — 160+ combined messages — chasing a modal that wouldn't close in a Playwright test. The root cause was test data isolation, not the modal. The AI spent all four sessions treating the symptom.
+
+## The methodology
+
+A few practices made this viable:
+
+**Plans before code.** Before every significant feature, I had Claude Code write an engineering plan — a markdown document specifying schema changes, API endpoints, component structure, and success criteria. The 20 plans ranged from 500 to 18,000 words. This up-front investment consistently produced shorter, more focused implementation sessions.
+
+**Tests as contracts.** The 69+ Playwright tests weren't afterthoughts. They ran before every commit via pre-commit hooks. When the AI generated code that broke an unrelated test, the commit was blocked. This forced the AI to maintain the entire system, not just the new feature.
+
+**Session boundaries as reset points.** Claude Code starts each session fresh — no memory of previous conversations. I treated this as a feature: each session got a specific task with a specific plan. When debugging spiraled, I'd start a new session with better context rather than letting the old one run to 700+ messages.
+
+**Human judgment at decision points.** The AI generated options; I chose. When it proposed five schema approaches for treatment plans, I picked JSONB over normalization based on team size (solo) and maintenance burden (minimal). When it proposed building complex order entry on mobile, I said no based on research showing doctors won't use it.
+
+## The series
+
+The next posts dig into specifics:
+
+1. [**Where AI Coding Shines**](/blog/where-ai-shines) — The 10x tasks: CRUD generation, schema design, mobile scaffolding, and the local-first AI assistant rewrite
+2. [**Where AI Coding Struggles**](/blog/where-ai-struggles) — E2E test fragility, silent RLS failures, auth edge cases, and cumulative code debt
+3. [**Test-Driven Discipline**](/blog/test-driven-ai) — How 69 Playwright tests became the contract that kept AI-generated code honest
+4. [**Architecture Decisions Through an AI Lens**](/blog/architecture-decisions) — JSONB vs normalized schemas, local-first AI, mobile scope decisions — and how having an AI pair programmer changes how you design
+5. [**Authorization as Architecture**](/blog/authorization-ehr) — Why Row Level Security is the right foundation for healthcare data, and how we built a multi-tenant access control system
+
+Each post draws from specific sessions, plans, and git history. No hypotheticals — just what actually happened.
+
+## Why write this?
+
+Most "I built X with AI" content is shallow. It's either hype ("10x faster!") or dismissal ("it writes bugs"). The reality is more nuanced and more interesting: AI coding agents are a genuine productivity shift *for certain classes of work*, but they require engineering discipline that most of the hype doesn't mention.
+
+I wrote this series because I wish someone had told me: the AI doesn't replace the engineer. It replaces the typing. The thinking — the architecture, the test strategy, the authorization model, the "should we even build this?" — that's still yours. And in healthcare software, where a misplaced RLS policy means a privacy violation and a missed edge case means a patient safety issue, that thinking is everything.
+
+---
+
+*Next: [Where AI Coding Shines — The 10x Tasks](/blog/where-ai-shines)*
